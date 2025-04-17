@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: telegram-car-bot
+    env: python
+    startCommand: python bot.py
+    plan: free
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
