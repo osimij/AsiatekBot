@@ -1,5 +1,5 @@
 python-telegram-bot==20.7
 python-dotenv
 resend
-supabase-py==1.0.3
+supabase==1.0.2
 
