@@ -1,6 +1,7 @@
 import logging
 import os
 import re # For basic VIN validation
+import sys # Import sys for os._exit
 
 # --- Telegram, Supabase, Resend Libraries ---
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,17 +14,35 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler,
 )
+# Ensure you have 'supabase' (the community Supabase Python library) installed, NOT 'supabase-py'
+# Make sure requirements.txt has 'supabase' without specific version if you want the latest,
+# or 'supabase==X.Y.Z' if a specific version is needed that's compatible.
+# Current requirements.txt should have 'supabase'
 from supabase import create_client, Client
 import resend
 
-# --- ⚠️ HARDCODED CONFIGURATION (Not Recommended for Production) ---
-# Make absolutely sure these values are correct!
-TELEGRAM_BOT_TOKEN = "7440133107:AAGS4Tin2oIB-KvwlDnffNaeeaJxjBJJLiU"
-SUPABASE_URL = "https://cosdgdtxunaigdslrjej.supabase.co"
-# This MUST be the 'anon' (public) key from your Supabase project API settings
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvc2RnZHR4dW5haWdkc2xyamVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDM2Mzg3OTQsImV4cCI6MjA1OTIxNDc5NH0.Kw5sspdKrITC42aFpqj7cS2ampQNqzKwa7dmS1NKPzw"
-RESEND_API_KEY = "re_NXRcuV2a_AfqeRqfdTQfrYyrQw7PmNaP6"
-ADMIN_EMAIL = "asiatek.pro@outlook.com" # The email address to receive notifications
+# --- Configuration (Fetched from Environment Variables) ---
+# These variables MUST be set in your Render service environment config.
+# We are removing hardcoded values here for security and flexibility.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
+
+# Render provides these environment variables automatically
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
+PORT = int(os.environ.get("PORT", 8080)) # Default port if not provided by Render
+
+# --- Basic Configuration Check ---
+# Perform this check early before client initialization
+if not all([TELEGRAM_BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY, RESEND_API_KEY, ADMIN_EMAIL, WEBHOOK_SECRET, RENDER_EXTERNAL_URL]):
+    missing_vars = [var_name for var_name in ["TELEGRAM_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY", "RESEND_API_KEY", "ADMIN_EMAIL", "WEBHOOK_SECRET", "RENDER_EXTERNAL_URL"] if os.environ.get(var_name) is None]
+    logging.critical(f"Missing required environment variables: {', '.join(missing_vars)}. Bot cannot start.")
+    # Use os._exit(1) to ensure the process terminates correctly on Render
+    sys.exit(1) # Use sys.exit which is preferred for exiting applications
+
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -39,25 +58,39 @@ try:
     logger.info("Supabase client initialized successfully.")
 except Exception as e:
     logger.error(f"CRITICAL: Failed to initialize Supabase client: {e}")
-    # exit()
+    # If Supabase client initialization is critical for your bot's basic function, exit.
+    # Otherwise, handle potential failures gracefully later.
+    sys.exit(1)
+
 
 try:
     resend.api_key = RESEND_API_KEY
     logger.info("Resend client configured successfully.")
 except Exception as e:
     logger.error(f"CRITICAL: Failed to configure Resend client: {e}")
-    # exit()
+    # If Resend is not critical for *initial* bot startup (e.g., only used for emails),
+    # you might not exit here, but handle email sending failures later.
+    # For this example, let's assume it's critical enough to log but not necessarily exit immediately,
+    # as the save_order function has a check.
+    pass
+
 
 # --- Conversation States ---
 ASK_VIN_KNOWN, GET_VIN, GET_CONTACT, GET_PARTS_VIN, GET_PARTS_CONTACT = range(5)
 
 # --- Helper Functions ---
-# --- >>> MODIFIED send_admin_notification function (Updated 'from' address) <<< ---
+
 async def send_admin_notification(user_details: dict, order_details: dict):
     """Sends an email notification to the admin using Resend."""
-    if not RESEND_API_KEY or not ADMIN_EMAIL:
+    if not resend.api_key or not ADMIN_EMAIL:
         logger.error("Resend API Key or Admin Email is not configured. Skipping notification.")
         return False
+
+    # Attempt to use a verified domain from your Resend account for the 'from' address.
+    # Replace "bot@yourdomain.com" with your actual verified domain email.
+    # Using the hardcoded one "bot@asiatek.pro" based on previous recap, but ideally
+    # this should be a domain you control and verify with Resend.
+    from_address = "Parts Bot <bot@asiatek.pro>"
 
     subject = f"New Car Parts Request from {user_details.get('username', user_details['id'])}"
 
@@ -79,24 +112,24 @@ async def send_admin_notification(user_details: dict, order_details: dict):
 
     try:
         params = {
-            # --- >>> UPDATED 'from' address using your verified domain <<< ---
-            "from": "Parts Bot <bot@asiatek.pro>", # Using your verified domain
-            # --- Keep the 'to' address ---
-            "to": [ADMIN_EMAIL], # Should be asiatek.pro@outlook.com
+            "from": from_address,
+            "to": [ADMIN_EMAIL],
             "subject": subject,
             "html": html_body,
         }
         email = resend.Emails.send(params)
-        logger.info(f"Admin notification email sent successfully via Resend: {email['id']}")
+        logger.info(f"Admin notification email sent successfully via Resend: {email.get('id', 'N/A')}") # Use .get for safety
         return True
     except Exception as e:
         logger.error(f"Failed to send admin notification email via Resend. Error: {e}")
+        # Log the attempted params *without* revealing API key or sensitive user data if possible
         logger.error(f"Resend params attempted: From={params.get('from')}, To={params.get('to')}, Subject={params.get('subject')}")
         return False
 
 # --- MODIFIED save_order_to_supabase function (using returning=None fix) ---
 async def save_order_to_supabase(user_id: int, username: str | None, parts: str, vin: str | None = None, contact: str | None = None) -> bool:
     """Saves the order details to the Supabase 'orders' table."""
+    # Re-check if supabase client was initialized successfully
     if supabase is None:
         logger.error("Supabase client is not initialized. Cannot save order.")
         return False
@@ -110,26 +143,25 @@ async def save_order_to_supabase(user_id: int, username: str | None, parts: str,
         "contact_info": contact,
         "parts_needed": parts
     }
+    # Only include non-None values in the insert data
     data_to_insert = {k: v for k, v in data.items() if v is not None}
 
     logger.info(f"Attempting to insert data into '{target_table}': {data_to_insert}")
 
     try:
-        # Execute the insert with returning=None to prevent implicit SELECT
-        insert_result = supabase.table(target_table).insert(data_to_insert, returning=None).execute()
+        # Execute the insert. With returning=None, this call succeeds if the insert
+        # is accepted by PostgREST, without waiting for the row data back.
+        # The .execute() method itself will raise an exception on error.
+        supabase.table(target_table).insert(data_to_insert, returning=None).execute()
 
-        # --- !!! MODIFIED SUCCESS CHECK !!! ---
-        # If the .execute() call above completes without raising an exception,
-        # it means the insert was successful when returning=None.
         logger.info(f"Supabase insert command executed successfully for user {user_id}.")
-        return True # Assume success if no exception was thrown
+        # If .execute() didn't raise an exception, we assume success.
+        return True
 
     except Exception as e:
-        # Log the error and the data attempted
         logger.error(f"Failed to save order to Supabase table '{target_table}' for user {user_id}. Data attempted: {data_to_insert}")
-        # Try to log specific Supabase/PostgREST error if available
+        # Attempt to extract more specific Supabase/PostgREST error details
         error_message = f"General exception: {e}"
-        # Check for Supabase/PostgREST specific error attributes
         if hasattr(e, 'message'): error_message += f" | Message: {e.message}"
         if hasattr(e, 'code'): error_message += f" | Code: {e.code}"
         if hasattr(e, 'details'): error_message += f" | Details: {e.details}"
@@ -137,35 +169,47 @@ async def save_order_to_supabase(user_id: int, username: str | None, parts: str,
         logger.error(f"Supabase error details: {error_message}")
         return False
 
-# --- Command and Conversation Handlers (Unchanged) ---
+# --- Command and Conversation Handlers (Keep these as they were) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation and asks if the user knows their VIN."""
     user = update.effective_user
-    logger.info(f"User {user.id} ({user.username or 'NoUsername'}) started the bot.")
+    if user:
+        logger.info(f"User {user.id} ({user.username or 'NoUsername'}) started the bot.")
+        await update.message.reply_html(
+            f"👋 Welcome, {user.mention_html()}!\n\n"
+            "I can help you request car parts. To get started, please tell me:",
+        )
 
-    await update.message.reply_html(
-        f"👋 Welcome, {user.mention_html()}!\n\n"
-        "I can help you request car parts. To get started, please tell me:",
-    )
+        context.user_data['telegram_user_id'] = user.id
+        context.user_data['telegram_username'] = user.username # Store username early
 
-    keyboard = [
-        [InlineKeyboardButton("✅ Yes, I know my VIN", callback_data="vin_yes")],
-        [InlineKeyboardButton("❌ No, I don't know my VIN", callback_data="vin_no")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        keyboard = [
+            [InlineKeyboardButton("✅ Yes, I know my VIN", callback_data="vin_yes")],
+            [InlineKeyboardButton("❌ No, I don't know my VIN", callback_data="vin_no")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text("Do you know your car's VIN (Vehicle Identification Number)?", reply_markup=reply_markup)
+        await update.message.reply_text("Do you know your car's VIN (Vehicle Identification Number)?", reply_markup=reply_markup)
 
-    return ASK_VIN_KNOWN # Next state
+        return ASK_VIN_KNOWN # Next state
+    else:
+         logger.warning("Received /start command from user object is None.")
+         return ConversationHandler.END
+
 
 async def ask_vin_known_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the Yes/No answer about knowing the VIN."""
     query = update.callback_query
+    if not query:
+        logger.warning("ask_vin_known_handler received update without callback_query.")
+        return ASK_VIN_KNOWN # Stay in state or end conversation? Let's try staying.
+
     await query.answer() # Acknowledge the button press
     user_choice = query.data
     user = query.from_user # Get the user who clicked the button
 
+    # Ensure user data is present if not already from /start (e.g., if starting convo with callback)
     context.user_data['telegram_user_id'] = user.id
     context.user_data['telegram_username'] = user.username
 
@@ -194,6 +238,10 @@ async def get_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the VIN and asks for the parts needed."""
     user_vin = update.message.text.strip() # Remove leading/trailing whitespace
     user = update.effective_user
+    if not user:
+        logger.warning("get_vin received update from user object is None.")
+        return ConversationHandler.END # End conversation if user is None
+
     logger.info(f"User {user.id} attempting to provide VIN: {user_vin}")
 
     if not re.match(r"^[A-HJ-NPR-Z0-9]{17}$", user_vin.upper()):
@@ -216,6 +264,10 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     """Stores the contact info and asks for the parts needed."""
     user_contact = update.message.text.strip()
     user = update.effective_user
+    if not user:
+        logger.warning("get_contact received update from user object is None.")
+        return ConversationHandler.END # End conversation if user is None
+
     logger.info(f"User {user.id} attempting to provide contact: {user_contact}")
 
     if len(user_contact) < 5: # Very simple check
@@ -228,7 +280,6 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     context.user_data['contact'] = user_contact
     logger.info(f"User {user.id} successfully provided contact info.")
 
-
     await update.message.reply_text(
         "Got it! Now, please describe the car parts or items you need.",
          reply_markup=ReplyKeyboardRemove(),
@@ -238,16 +289,22 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def get_parts_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Gets parts description (after VIN), saves order, notifies admin, and ends conversation."""
     parts_needed = update.message.text.strip()
+    user = update.effective_user # Get user again for safety
     if not parts_needed:
         await update.message.reply_text("Please describe the parts you need, or type /cancel.")
         return GET_PARTS_VIN # Stay in state if empty message
+    if not user:
+        logger.warning("get_parts_vin received update from user object is None.")
+        context.user_data.clear()
+        return ConversationHandler.END
 
     user_id = context.user_data.get('telegram_user_id')
     username = context.user_data.get('telegram_username')
     vin = context.user_data.get('vin')
 
-    if not all([user_id, vin]):
-         logger.error("Error retrieving user data (ID or VIN missing) in get_parts_vin.")
+    # Double check core data is present in context.user_data
+    if user_id is None or vin is None:
+         logger.error(f"Error: User data (ID:{user_id}, VIN:{vin}) missing in get_parts_vin.")
          await update.message.reply_text("Sorry, something went wrong with retrieving your details. Please /start again.")
          context.user_data.clear()
          return ConversationHandler.END
@@ -283,16 +340,23 @@ async def get_parts_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def get_parts_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Gets parts description (after Contact), saves order, notifies admin, and ends conversation."""
     parts_needed = update.message.text.strip()
+    user = update.effective_user # Get user again for safety
     if not parts_needed:
         await update.message.reply_text("Please describe the parts you need, or type /cancel.")
         return GET_PARTS_CONTACT # Stay in state if empty message
+    if not user:
+        logger.warning("get_parts_contact received update from user object is None.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
 
     user_id = context.user_data.get('telegram_user_id')
     username = context.user_data.get('telegram_username')
     contact = context.user_data.get('contact')
 
-    if not all([user_id, contact]):
-         logger.error("Error retrieving user data (ID or Contact missing) in get_parts_contact.")
+    # Double check core data is present in context.user_data
+    if user_id is None or contact is None:
+         logger.error(f"Error: User data (ID:{user_id}, Contact:{contact}) missing in get_parts_contact.")
          await update.message.reply_text("Sorry, something went wrong with retrieving your details. Please /start again.")
          context.user_data.clear()
          return ConversationHandler.END
@@ -340,29 +404,25 @@ async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id if update.effective_user else "Unknown"
     text = update.message.text if update.message else "[No message text]"
     logger.warning(f"Fallback handler triggered for user {user_id}. Message: '{text}'. State: {context.conversation_state if hasattr(context, 'conversation_state') else 'N/A'}")
-    await update.message.reply_text(
-        "Sorry, I wasn't expecting that. If you were in the middle of a request, please follow the prompts. "
-        "You can always start over with /start or cancel with /cancel."
-        )
+    # Don't send a message back if the user is None (can happen with service messages etc.)
+    if update.effective_message:
+         await update.effective_message.reply_text(
+            "Sorry, I wasn't expecting that. If you were in the middle of a request, please follow the prompts. "
+            "You can always start over with /start or cancel with /cancel."
+         )
 
-# --- Main Bot Execution (Unchanged) ---
+
+# --- Main Bot Execution (MODIFIED for Webhooks on Render) ---
 def main() -> None:
-    """Start the bot."""
+    """Start the bot using webhooks."""
 
-    if not all([TELEGRAM_BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY, RESEND_API_KEY, ADMIN_EMAIL]):
-        logger.critical("One or more hardcoded configuration variables are empty! Please check the code.")
-        return
-    if "YOUR_" in TELEGRAM_BOT_TOKEN or "YOUR_" in SUPABASE_URL:
-        logger.critical("Configuration variables seem to contain placeholder text! Please check the hardcoded values.")
-        return
+    # --- Configuration check is already done at the top ---
 
-    if supabase is None:
-        logger.critical("Supabase client failed to initialize. Bot cannot function properly. Exiting.")
-        return
-
-    logger.info("Initializing Telegram Bot Application...")
+    logger.info("Initializing Telegram Bot Application for Webhooks...")
+    # Configure the Application for webhook mode
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # --- Add Handlers ---
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -374,17 +434,57 @@ def main() -> None:
         },
         fallbacks=[
              CommandHandler("cancel", cancel),
-             MessageHandler(filters.COMMAND | filters.TEXT, fallback_handler)
+             # Use filters.ALL instead of filters.COMMAND | filters.TEXT in fallback
+             # to catch other update types if they occur outside the conversation
+             MessageHandler(filters.ALL, fallback_handler)
         ],
         name="car_parts_conversation",
+        persistent=False # Set to True if you implement persistence later
     )
 
     application.add_handler(conv_handler)
-    application.add_handler(MessageHandler(filters.COMMAND, fallback_handler))
+    # Add a general message handler outside the conversation for commands not in entry points
+    # and messages outside conversation, but let the conversation handler catch its cases first.
+    # The fallback in conv_handler covers messages *while* in the conversation.
+    # This handler catches commands/messages when *not* in a conversation and they weren't /start.
+    application.add_handler(MessageHandler(filters.COMMAND | filters.TEXT & ~filters.COMMAND, fallback_handler))
+    # Consider adding other handlers for non-text updates if needed
 
-    logger.info("Bot starting polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-    logger.info("Bot polling stopped.")
+
+    # --- Configure and Run Webhook ---
+    # Telegram sends updates to a specific URL path you define
+    webhook_url_path = "/webhook"
+    # Construct the full webhook URL that Telegram will send updates to
+    full_webhook_url = f"{RENDER_EXTERNAL_URL}{webhook_url_path}"
+
+    logger.info(f"Setting webhook URL to: {full_webhook_url}")
+    try:
+        # Set the webhook with Telegram. This tells Telegram *where* to send updates.
+        application.bot.set_webhook(
+            url=full_webhook_url,
+            secret_token=WEBHOOK_SECRET,
+            allowed_updates=Update.ALL_TYPES # Recommend specifying specific types for efficiency
+                                            # e.g., ["message", "callback_query"] for this bot
+        )
+        logger.info("Telegram webhook set successfully.")
+    except Exception as e:
+        # Log failure but don't necessarily exit, as the curl command might have set it already
+        logger.error(f"Failed to programmatically set Telegram webhook: {e}")
+        # The application will still try to run the webhook server, hoping the webhook is already set externally
+
+
+    logger.info(f"Starting webhook server on port {PORT} listening for path {webhook_url_path}...")
+    # Start the webhook server. This makes your application listen for
+    # incoming POST requests from Telegram on the assigned Render port.
+    application.run_webhook(
+        listen="0.0.0.0", # Listen on all network interfaces
+        port=PORT,         # Use the port assigned by Render
+        url_path=webhook_url_path, # The specific path Telegram sends updates to
+        # drop_pending_updates=True # Uncomment if you want to ignore any updates
+                                    # Telegram tried to send while the bot was down/misconfigured.
+    )
+    logger.info("Webhook server stopped.")
+
 
 if __name__ == "__main__":
     main()
