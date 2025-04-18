@@ -487,7 +487,6 @@ def main() -> None:
     # --- Configure and Run Webhook ---
     # The webhook_url is already set during Application.builder()
     # Use this line for logging what PTB is configured to send to Telegram
-    logger.info(f"Configured webhook URL for PTB: {application.webhook_url}")
 
 
     # --- Removed manual set_webhook call. run_webhook handles it. ---
