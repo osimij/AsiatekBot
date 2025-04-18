@@ -445,7 +445,7 @@ def main() -> None:
     # Configure the Application for webhook mode
     # url_path is where telegram will send updates (e.g., https://your-service.render.com/webhook)
     webhook_url_path = "/webhook"
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).base_url(f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/').webhook_url(f'{RENDER_EXTERNAL_URL}{webhook_url_path}').build() # type: ignore # Ignore type warning for base_url/webhook_url if needed
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).base_url(f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/').build() # type: ignore # Ignore type warning for base_url if needed
 
 
     # --- Add Handlers ---
