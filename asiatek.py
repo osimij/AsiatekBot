@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*- # Add encoding declaration for clarity with Cyrillic
 import logging
 import os
 import re # For basic VIN validation
@@ -14,63 +15,49 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler,
 )
-# Ensure you have 'supabase' (the community Supabase Python library) installed, NOT 'supabase-py'
-# Make sure requirements.txt has 'supabase' version 2.15.0 (or newer compatible with p-t-b 21.7+)
 from supabase import create_client, Client
 import resend
 
 # --- Configuration (Fetched from Environment Variables) ---
-# These variables MUST be set in your Render service environment config.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET")
-
-# Render provides these environment variables automatically when running a web service
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
-PORT = int(os.environ.get("PORT", 8080)) # Default to 8080 if PORT not set by Render (unlikely for web)
+PORT = int(os.environ.get("PORT", 8080))
 
 # --- Basic Configuration Check ---
 required_vars = ["TELEGRAM_BOT_TOKEN", "SUPABASE_URL", "SUPABASE_KEY", "RESEND_API_KEY", "ADMIN_EMAIL", "WEBHOOK_SECRET", "RENDER_EXTERNAL_URL"]
 missing_vars = [var_name for var_name in required_vars if os.environ.get(var_name) is None]
 if missing_vars:
-    # Use critical logging before exiting
     logging.critical(f"Missing required environment variables: {', '.join(missing_vars)}. Bot cannot start.")
-    # Use sys.exit(1) to ensure the process terminates correctly on Render if config is missing
     sys.exit(1)
 
 # --- Logging Setup ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-# Set logging level for potentially noisy libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("supabase").setLevel(logging.INFO) # Set supabase logging level as needed
-logger = logging.getLogger(__name__) # Get a logger for your script
-
+logging.getLogger("supabase").setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- Initialize Clients ---
 supabase: Client | None = None
 try:
-    # Ensure client is created only if URL and KEY are present (checked above)
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY) # type: ignore
     logger.info("Supabase client initialized successfully.")
 except Exception as e:
     logger.error(f"CRITICAL: Failed to initialize Supabase client: {e}")
-    # If Supabase client initialization is critical for your bot's basic function, exit.
     sys.exit(1)
 
 try:
-    # Ensure API key is present (checked above)
     resend.api_key = RESEND_API_KEY # type: ignore
     logger.info("Resend client configured successfully.")
 except Exception as e:
     logger.error(f"CRITICAL: Failed to configure Resend client: {e}")
-    # Log the critical error during startup. Actual sending failures handled later.
     pass
-
 
 # --- Conversation States ---
 ASK_VIN_KNOWN, GET_VIN, GET_CONTACT, GET_PARTS_VIN, GET_PARTS_CONTACT = range(5)
@@ -78,42 +65,39 @@ ASK_VIN_KNOWN, GET_VIN, GET_CONTACT, GET_PARTS_VIN, GET_PARTS_CONTACT = range(5)
 # --- Helper Functions ---
 
 async def send_admin_notification(user_details: dict, order_details: dict):
-    """Sends an email notification to the admin using Resend."""
+    """Sends an email notification to the admin using Resend. (Email content remains English)"""
     if not RESEND_API_KEY or not ADMIN_EMAIL:
         logger.error("Resend API Key or Admin Email is not configured for sending notification.")
         return False
 
-    # !!! IMPORTANT: Ensure this 'from' address is verified in your Resend account! !!!
-    # Using a generic placeholder - REPLACE "bot@yourverifieddomain.com"
-    from_address = "Parts Bot <bot@asiatek.pro>" # Use your verified domain email here
+    from_address = "Parts Bot <bot@asiatek.pro>" # !! Use your verified domain email !!
 
+    # --- Email content remains in English for the Admin ---
     subject = f"New Car Parts Request from {user_details.get('username', user_details['id'])}"
-
     html_body = f"""
     <h2>New Car Parts Request Received</h2>
     <p><strong>Telegram User ID:</strong> {user_details['id']}</p>
     <p><strong>Telegram Username:</strong> @{user_details.get('username', 'N/A')}</p>
     """
-
     if 'vin' in order_details and order_details['vin']:
         html_body += f"<p><strong>Provided VIN:</strong> {order_details['vin']}</p>"
     elif 'contact' in order_details and order_details['contact']:
          html_body += f"<p><strong>Provided Contact:</strong> {order_details['contact']}</p>"
     else:
          html_body += "<p><strong>VIN/Contact:</strong> Not provided or missing.</p>"
-
     html_body += f"<p><strong>Parts Needed:</strong></p><p>{order_details.get('parts', 'N/A')}</p>"
     html_body += "<hr><p>Please follow up with the user.</p>"
+    # --- End of English Email Content ---
 
     try:
         params = {
             "from": from_address,
-            "to": [ADMIN_EMAIL], # Should be your admin email
+            "to": [ADMIN_EMAIL],
             "subject": subject,
             "html": html_body,
         }
         email = resend.Emails.send(params)
-        logger.info(f"Admin notification email sent successfully via Resend: {email.get('id', 'N/A')}") # Use .get for safety
+        logger.info(f"Admin notification email sent successfully via Resend: {email.get('id', 'N/A')}")
         return True
     except Exception as e:
         logger.error(f"Failed to send admin notification email via Resend. Error: {e}")
@@ -135,17 +119,14 @@ async def save_order_to_supabase(user_id: int, username: str | None, parts: str,
         "parts_needed": parts
     }
     data_to_insert = {k: v for k, v in data.items() if v is not None}
-
     logger.info(f"Attempting to insert data into '{target_table}': {data_to_insert}")
 
     try:
-        # Execute the insert with returning=None
         supabase.table(target_table).insert(data_to_insert, returning=None).execute()
         logger.info(f"Supabase insert command executed successfully for user {user_id}.")
         return True
     except Exception as e:
         logger.error(f"Failed to save order to Supabase table '{target_table}' for user {user_id}. Data attempted: {data_to_insert}")
-        # Log detailed error if available
         error_message = f"General exception: {e}"
         if hasattr(e, 'message'): error_message += f" | Message: {e.message}" # type: ignore
         if hasattr(e, 'code'): error_message += f" | Code: {e.code}" # type: ignore
@@ -154,42 +135,46 @@ async def save_order_to_supabase(user_id: int, username: str | None, parts: str,
         logger.error(f"Supabase error details: {error_message}")
         return False
 
-# --- Command and Conversation Handlers ---
+# --- Command and Conversation Handlers (RUSSIAN TRANSLATIONS) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the conversation and asks if the user knows their VIN."""
+    """Starts the conversation and asks if the user knows their VIN (in Russian)."""
     user = update.effective_user
-    if not user or not update.message: # Check if message exists too
+    if not user or not update.message:
         logger.warning("Received /start command from user object is None or message is None.")
         return ConversationHandler.END
 
     logger.info(f"User {user.id} ({user.username or 'NoUsername'}) started the bot.")
 
+    # Russian: Welcome message
     await update.message.reply_html(
-        f"👋 Welcome, {user.mention_html()}!\n\n"
-        "I can help you request car parts. To get started, please tell me:",
+        f"👋 Добро пожаловать, {user.mention_html()}!\n\n"
+        "Я помогу вам запросить автозапчасти. Для начала, пожалуйста, скажите:",
     )
 
     context.user_data['telegram_user_id'] = user.id
     context.user_data['telegram_username'] = user.username
 
+    # Russian: Button labels (callback_data remains English!)
     keyboard = [
-        [InlineKeyboardButton("✅ Yes, I know my VIN", callback_data="vin_yes")],
-        [InlineKeyboardButton("❌ No, I don't know my VIN", callback_data="vin_no")],
+        [InlineKeyboardButton("✅ Да, я знаю свой VIN", callback_data="vin_yes")],
+        [InlineKeyboardButton("❌ Нет, я не знаю свой VIN", callback_data="vin_no")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text("Do you know your car's VIN (Vehicle Identification Number)?", reply_markup=reply_markup)
+    # Russian: Ask about VIN
+    await update.message.reply_text("Знаете ли вы VIN (идентификационный номер) вашего автомобиля?", reply_markup=reply_markup)
 
     return ASK_VIN_KNOWN
 
 async def ask_vin_known_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handles the Yes/No answer about knowing the VIN."""
+    """Handles the Yes/No answer about knowing the VIN (in Russian)."""
     query = update.callback_query
     if not query:
         logger.warning("ask_vin_known_handler received update without callback_query.")
         if update.effective_message:
-             await update.effective_message.reply_text("Sorry, I didn't get that. Please use the buttons, or /start again.")
+             # Russian: Error message
+             await update.effective_message.reply_text("Извините, я не понял. Пожалуйста, используйте кнопки или начните сначала с /start.")
         return ASK_VIN_KNOWN
 
     await query.answer()
@@ -201,28 +186,33 @@ async def ask_vin_known_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if user_choice == "vin_yes":
         logger.info(f"User {user.id} chose 'Yes' to VIN.")
-        await query.edit_message_text(text="Great! Please enter your 17-digit VIN.")
+        # Russian: Ask for VIN
+        await query.edit_message_text(text="Отлично! Пожалуйста, введите ваш 17-значный VIN.")
         return GET_VIN
     elif user_choice == "vin_no":
         logger.info(f"User {user.id} chose 'No' to VIN.")
+        # Russian: Ask for contact info
         await query.edit_message_text(
-            text="No problem. Please provide your phone number or email address so we can contact you."
+            text="Нет проблем. Пожалуйста, укажите ваш номер телефона или адрес электронной почты, чтобы мы могли с вами связаться."
         )
         return GET_CONTACT
     else:
         logger.warning(f"User {user.id} sent unexpected callback data: {user_choice}")
-        await query.edit_message_text(text="Sorry, I didn't understand that. Please use the buttons.")
+        # Russian: Error message
+        await query.edit_message_text(text="Извините, я не понял. Пожалуйста, используйте кнопки.")
+        # Russian: Re-send buttons
         keyboard = [
-            [InlineKeyboardButton("✅ Yes, I know my VIN", callback_data="vin_yes")],
-            [InlineKeyboardButton("❌ No, I don't know my VIN", callback_data="vin_no")],
+            [InlineKeyboardButton("✅ Да, я знаю свой VIN", callback_data="vin_yes")],
+            [InlineKeyboardButton("❌ Нет, я не знаю свой VIN", callback_data="vin_no")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        if query.message: # Check if message exists before replying
-            await query.message.reply_text("Do you know your car's VIN?", reply_markup=reply_markup)
+        if query.message:
+            # Russian: Re-ask about VIN
+            await query.message.reply_text("Знаете ли вы VIN вашего автомобиля?", reply_markup=reply_markup)
         return ASK_VIN_KNOWN
 
 async def get_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the VIN and asks for the parts needed."""
+    """Stores the VIN and asks for the parts needed (in Russian)."""
     user = update.effective_user
     if not user or not update.message or not update.message.text:
         logger.warning("get_vin received invalid update (no user or text message).")
@@ -233,22 +223,24 @@ async def get_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     if not re.match(r"^[A-HJ-NPR-Z0-9]{17}$", user_vin.upper()):
          logger.warning(f"User {user.id} provided invalid VIN format: {user_vin}")
+         # Russian: Invalid VIN format message
          await update.message.reply_text(
-             "That doesn't look like a valid 17-character VIN (only letters A-Z except I,O,Q and numbers 0-9).\nPlease try again, or type /cancel to stop."
+             "Это не похоже на действительный 17-значный VIN (только буквы A-Z кроме I,O,Q и цифры 0-9).\nПожалуйста, попробуйте еще раз или введите /cancel для отмены."
          )
          return GET_VIN
 
     context.user_data['vin'] = user_vin.upper()
     logger.info(f"User {user.id} successfully provided VIN: {context.user_data['vin']}")
 
+    # Russian: Ask for parts description
     await update.message.reply_text(
-        "Thank you! Now, please describe the car parts or items you need.",
+        "Спасибо! Теперь, пожалуйста, опишите необходимые вам автозапчасти или детали.",
          reply_markup=ReplyKeyboardRemove(),
     )
     return GET_PARTS_VIN
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the contact info and asks for the parts needed."""
+    """Stores the contact info and asks for the parts needed (in Russian)."""
     user = update.effective_user
     if not user or not update.message or not update.message.text:
         logger.warning("get_contact received invalid update (no user or text message).")
@@ -259,22 +251,24 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     if len(user_contact) < 5:
          logger.warning(f"User {user.id} provided short contact info: {user_contact}")
+         # Russian: Invalid contact format message
          await update.message.reply_text(
-            "Please enter a valid phone number or email address (at least 5 characters).\nOr type /cancel to stop."
+            "Пожалуйста, введите действительный номер телефона или адрес электронной почты (минимум 5 символов).\nИли введите /cancel для отмены."
             )
          return GET_CONTACT
 
     context.user_data['contact'] = user_contact
     logger.info(f"User {user.id} successfully provided contact info.")
 
+    # Russian: Ask for parts description
     await update.message.reply_text(
-        "Got it! Now, please describe the car parts or items you need.",
+        "Понял! Теперь, пожалуйста, опишите необходимые вам автозапчасти или детали.",
          reply_markup=ReplyKeyboardRemove(),
     )
     return GET_PARTS_CONTACT
 
 async def get_parts_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Gets parts description (after VIN), saves order, notifies admin, and ends conversation."""
+    """Gets parts description (after VIN), saves, notifies, and ends (in Russian)."""
     user = update.effective_user
     if not user or not update.message or not update.message.text:
         logger.warning("get_parts_vin received invalid update (no user or text message).")
@@ -283,7 +277,8 @@ async def get_parts_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     parts_needed = update.message.text.strip()
     if not parts_needed:
-        await update.message.reply_text("Please describe the parts you need, or type /cancel.")
+        # Russian: Ask again for parts
+        await update.message.reply_text("Пожалуйста, опишите необходимые детали или введите /cancel для отмены.")
         return GET_PARTS_VIN
 
     user_id = context.user_data.get('telegram_user_id')
@@ -292,7 +287,8 @@ async def get_parts_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     if user_id is None or vin is None:
          logger.error(f"Error: User data (ID:{user_id}, VIN:{vin}) missing in get_parts_vin context.")
-         await update.message.reply_text("Sorry, something went wrong with retrieving your details. Please /start again.")
+         # Russian: Context error message
+         await update.message.reply_text("Извините, произошла ошибка при получении ваших данных. Пожалуйста, начните сначала с /start.")
          context.user_data.clear()
          return ConversationHandler.END
 
@@ -305,25 +301,28 @@ async def get_parts_vin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         order_details = {"vin": vin, "parts": parts_needed}
         notified = await send_admin_notification(user_details, order_details)
 
+        # Russian: Success message (VIN path)
         await update.message.reply_text(
-            "✅ Thank you! Your request has been submitted.\n"
-            "We have your VIN and parts list. We will process it and contact you if needed."
+            "✅ Спасибо! Ваш запрос отправлен.\n"
+            "Мы получили ваш VIN и список деталей. Мы обработаем его и свяжемся с вами при необходимости."
         )
         if not notified:
+            # Russian: Notification failure warning
             await update.message.reply_text(
-                 "(There may have been an issue notifying the admin via email, but your request *is* saved.)"
+                 "(Возможно, возникла проблема с отправкой уведомления администратору по почте, но ваш запрос *сохранен*.)"
             )
     else:
+        # Russian: Database save error message
         await update.message.reply_text(
-            "❌ Sorry, there was an error saving your request to our database. "
-            "Please try again later or contact support directly if the problem persists."
+            "❌ Извините, произошла ошибка при сохранении вашего запроса в базе данных. "
+            "Пожалуйста, попробуйте позже или свяжитесь со службой поддержки напрямую, если проблема не исчезнет."
         )
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def get_parts_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Gets parts description (after Contact), saves order, notifies admin, and ends conversation."""
+    """Gets parts description (after Contact), saves, notifies, and ends (in Russian)."""
     user = update.effective_user
     if not user or not update.message or not update.message.text:
         logger.warning("get_parts_contact received invalid update (no user or text message).")
@@ -332,7 +331,8 @@ async def get_parts_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     parts_needed = update.message.text.strip()
     if not parts_needed:
-        await update.message.reply_text("Please describe the parts you need, or type /cancel.")
+        # Russian: Ask again for parts
+        await update.message.reply_text("Пожалуйста, опишите необходимые детали или введите /cancel для отмены.")
         return GET_PARTS_CONTACT
 
     user_id = context.user_data.get('telegram_user_id')
@@ -341,7 +341,8 @@ async def get_parts_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if user_id is None or contact is None:
          logger.error(f"Error: User data (ID:{user_id}, Contact:{contact}) missing in get_parts_contact context.")
-         await update.message.reply_text("Sorry, something went wrong with retrieving your details. Please /start again.")
+         # Russian: Context error message
+         await update.message.reply_text("Извините, произошла ошибка при получении ваших данных. Пожалуйста, начните сначала с /start.")
          context.user_data.clear()
          return ConversationHandler.END
 
@@ -354,31 +355,35 @@ async def get_parts_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         order_details = {"contact": contact, "parts": parts_needed}
         notified = await send_admin_notification(user_details, order_details)
 
+        # Russian: Success message (Contact path)
         await update.message.reply_text(
-            "✅ Thank you! Your request has been submitted.\n"
-            "We have your contact details and parts list. We will contact you soon!"
+            "✅ Спасибо! Ваш запрос отправлен.\n"
+            "Мы получили ваши контактные данные и список деталей. Мы скоро свяжемся с вами!"
         )
         if not notified:
+             # Russian: Notification failure warning
              await update.message.reply_text(
-                 "(There may have been an issue notifying the admin via email, but your request *is* saved.)"
+                 "(Возможно, возникла проблема с отправкой уведомления администратору по почте, но ваш запрос *сохранен*.)"
              )
     else:
+        # Russian: Database save error message
         await update.message.reply_text(
-            "❌ Sorry, there was an error saving your request to our database. "
-            "Please try again later or contact support directly if the problem persists."
+            "❌ Извините, произошла ошибка при сохранении вашего запроса в базе данных. "
+            "Пожалуйста, попробуйте позже или свяжитесь со службой поддержки напрямую, если проблема не исчезнет."
         )
 
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels and ends the conversation."""
+    """Cancels and ends the conversation (in Russian)."""
     user = update.effective_user
     user_id_log = user.id if user else "Unknown"
     if update and update.effective_message:
         logger.info(f"User {user_id_log} canceled the conversation.")
+        # Russian: Cancellation confirmation
         await update.effective_message.reply_text(
-            "Okay, the request process has been cancelled.", reply_markup=ReplyKeyboardRemove()
+            "Хорошо, процесс запроса отменен.", reply_markup=ReplyKeyboardRemove()
         )
     else:
          logger.warning(f"Cancel received invalid update (no user or message). User ID: {user_id_log}")
@@ -387,33 +392,30 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles messages that are not part of the expected conversation flow."""
+    """Handles messages that are not part of the expected conversation flow (in Russian)."""
     user_id = update.effective_user.id if update.effective_user else "Unknown"
     text = update.message.text if update.message else "[No message text]"
-    # Try to get conversation state, default to 'N/A' if not available
     state = context.conversation_state if hasattr(context, 'conversation_state') else 'N/A'
     logger.warning(f"Fallback handler triggered for user {user_id}. Message: '{text}'. State: {state}")
     if update and update.effective_message:
+         # Russian: Fallback message
          await update.effective_message.reply_text(
-            "Sorry, I wasn't expecting that. If you were in the middle of a request, please follow the prompts. "
-            "You can always start over with /start or cancel with /cancel."
+            "Извините, я этого не ожидал. Если вы были в процессе запроса, пожалуйста, следуйте подсказкам. "
+            "Вы всегда можете начать сначала с /start или отменить с /cancel."
          )
 
-# --- Main Bot Execution (REVISED for Webhooks on Render) ---
+# --- Main Bot Execution ---
 def main() -> None:
     """Start the bot using webhooks."""
 
-    # --- Configuration check & Client initialization are done at the top ---
-
     logger.info("Initializing Telegram Bot Application for Webhooks...")
-
-    # *** REVISED: Removed base_url from builder ***
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build() # type: ignore
 
-    # --- Add Handlers ---
+    # --- Add Handlers (Conversation logic remains the same) ---
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
+            # Callback data remains "vin_yes", "vin_no"
             ASK_VIN_KNOWN: [CallbackQueryHandler(ask_vin_known_handler, pattern="^vin_yes|vin_no$")],
             GET_VIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_vin)],
             GET_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
@@ -422,8 +424,7 @@ def main() -> None:
         },
         fallbacks=[
              CommandHandler("cancel", cancel),
-             # Fallback for any message/command not handled by current state
-             MessageHandler(filters.ALL, fallback_handler) # Catch-all fallback
+             MessageHandler(filters.ALL, fallback_handler)
         ],
         name="car_parts_conversation",
         persistent=False
@@ -432,34 +433,23 @@ def main() -> None:
     application.add_handler(conv_handler)
 
     # --- Configure and Run Webhook ---
-    webhook_url_path = "/webhook" # The path on your Render service (e.g., /telegram or /)
-
-    # *** REVISED: Construct the full webhook URL using Render's env var ***
-    # Ensure RENDER_EXTERNAL_URL ends with a single slash if needed, then add the path
-    if RENDER_EXTERNAL_URL: # Should always be present after the initial check
+    webhook_url_path = "/webhook"
+    if RENDER_EXTERNAL_URL:
         full_webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}{webhook_url_path}"
         logger.info(f"Webhook URL that will be set with Telegram: {full_webhook_url}")
     else:
-        # This case should theoretically not be reached due to the check at the top,
-        # but added for robustness. The bot won't work without the external URL.
         logger.critical("RENDER_EXTERNAL_URL is missing after initial check. Cannot set webhook URL.")
-        sys.exit(1) # Exit if the URL isn't available
+        sys.exit(1)
 
     logger.info(f"Starting webhook server on 0.0.0.0:{PORT}, listening for path {webhook_url_path}...")
-    # Start the webhook server. This makes your application listen for
-    # incoming POST requests from Telegram on the assigned Render port.
-    # run_webhook will internally set the webhook with Telegram using the provided webhook_url.
-    # *** REVISED: Added webhook_url parameter ***
     application.run_webhook(
-        listen="0.0.0.0",               # Listen on all interfaces
-        port=PORT,                      # Port provided by Render
-        url_path=webhook_url_path,      # Path Telegram will post updates to (relative to your domain)
-        webhook_url=full_webhook_url,   # The full public URL Telegram should send updates to
-        secret_token=WEBHOOK_SECRET,    # Secret token for verifying requests
-        # drop_pending_updates=True    # Optional: Uncomment to ignore old updates on startup
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=webhook_url_path,
+        webhook_url=full_webhook_url,
+        secret_token=WEBHOOK_SECRET,
     )
     logger.info("Webhook server stopped.")
-
 
 if __name__ == "__main__":
     main()
