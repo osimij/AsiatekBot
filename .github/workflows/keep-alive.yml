@@ -1,9 +1,9 @@
 name: Keep Bot Awake
 
-# runs every 15 minutes
 on:
   schedule:
-    - cron:  '*/15 * * * *'
+    - cron: '*/15 * * * *'
+  workflow_dispatch:   # ← allows manual runs
 
 jobs:
   ping-render:
@@ -12,4 +12,3 @@ jobs:
       - name: Send GET to Render webhook
         run: |
           curl --max-time 10 https://asiatekbot.onrender.com/webhook || true
-          
