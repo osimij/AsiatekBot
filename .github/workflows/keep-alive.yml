@@ -11,4 +11,4 @@ jobs:
     steps:
       - name: Send GET to Render keep-alive endpoint
         run: |
-          curl --max-time 10 https://asiatekbot.onrender.com/keep-alive || true
+          run: curl -X POST -H "Content-Type: application/json" -d '{"message":"ping"}' https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage
