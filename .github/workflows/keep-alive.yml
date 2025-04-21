@@ -2,13 +2,13 @@ name: Keep Bot Awake
 
 on:
   schedule:
-    - cron:  '*/15 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
   ping-render:
     runs-on: ubuntu-latest
     steps:
-      - name: Send GET to Render keep-alive endpoint
+      - name: Send webhook ping
         run: |
-          run: curl -X POST -H "Content-Type: application/json" -d '{"message":"ping"}' https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage
+          curl -X POST https://asiatekbot.onrender.com/webhook -H "Content-Type: application/json" -d '{"message": {"text": "ping"}}' || true
