@@ -349,44 +349,30 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles messages outside the expected flow."""
+
+    # --- Handle keep-alive ping silently ---
+    if update and update.effective_message and update.effective_message.text == "ping":
+        logger.info("Received keep-alive ping — ignoring.")
+        return
+
+    # --- Fallback logic for unexpected inputs ---
     user = update.effective_user
     user_id = user.id if user else "Unknown"
     text = update.message.text if update.message else "[No message text]"
     state = context.conversation_state if hasattr(context, 'conversation_state') else 'N/A'
     logger.warning(f"Fallback handler triggered for user {user_id}. Message: '{text}'. State: {state}")
 
-    # *** LOGGING: Log fallback event ***
-    await log_interaction(update, context, interaction_type='fallback', detail=text[:100]) # Log first 100 chars
+    # Log fallback interaction
+    await log_interaction(update, context, interaction_type='fallback', detail=text[:100])  # Log first 100 chars
 
     if update and update.effective_message:
-         if text.startswith('/'):
-             await update.effective_message.reply_text(f"Команда {text} здесь не ожидается. Пожалуйста, следуйте инструкциям или используйте /cancel для отмены.")
-         else:
-            await update.effective_message.reply_text("Извините, я этого не ожидал. Если вы были в процессе запроса, пожалуйста, следуйте подсказкам. "
-                                                      "Вы всегда можете начать сначала с /start или отменить с /cancel.")
-
-from aiohttp import web
-import threading
-
-async def handle_keep_alive(request):
-    return web.json_response({"status": "awake"})
-
-def start_keep_alive_server():
-    app = web.Application()
-    app.router.add_get('/keep-alive', handle_keep_alive)
-    runner = web.AppRunner(app)
-
-    async def _run():
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", PORT)
-        await site.start()
-
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(_run())
-    loop.run_forever()
-
+        if text.startswith('/'):
+            await update.effective_message.reply_text(
+                f"Команда {text} здесь не ожидается. Пожалуйста, следуйте инструкциям или используйте /cancel для отмены.")
+        else:
+            await update.effective_message.reply_text(
+                "Извините, я этого не ожидал. Если вы были в процессе запроса, пожалуйста, следуйте подсказкам. "
+                "Вы всегда можете начать сначала с /start или отменить с /cancel.")
 
 # --- Main Bot Execution ---
 def main() -> None:
@@ -424,7 +410,6 @@ def main() -> None:
         logger.critical("RENDER_EXTERNAL_URL is missing after initial check. Cannot set webhook URL.")
         sys.exit(1)
     logger.info(f"Starting webhook server on 0.0.0.0:{PORT}, listening for path {webhook_url_path}...")
-    threading.Thread(target=start_keep_alive_server, daemon=True).start()
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
