@@ -1,9 +1,32 @@
 # -*- coding: utf-8 -*-
 import logging
+from telegram.ext import ApplicationHandlerStop
 import os
 import re
 import sys
 from datetime import datetime # Import datetime
+
+from aiohttp import web
+import asyncio
+import threading
+
+async def handle_keep_alive(request):
+    return web.json_response({"status": "awake"})
+
+def start_keep_alive_server():
+    app = web.Application()
+    app.router.add_get('/keep-alive', handle_keep_alive)
+    runner = web.AppRunner(app)
+
+    async def _run():
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", PORT)
+        await site.start()
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.run_forever()
 
 # --- Telegram, Supabase, Resend Libraries ---
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, constants
@@ -373,13 +396,25 @@ async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text(
                 "Извините, я этого не ожидал. Если вы были в процессе запроса, пожалуйста, следуйте подсказкам. "
                 "Вы всегда можете начать сначала с /start или отменить с /cancel.")
+            
+async def keep_alive_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"🔥 KEEP-ALIVE PING RECEIVED: {update.to_dict()}")
+    raise ApplicationHandlerStop()
+
 
 # --- Main Bot Execution ---
 def main() -> None:
     """Start the bot using webhooks."""
     logger.info("Initializing Telegram Bot Application for Webhooks...")
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build() # type: ignore
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()  # type: ignore
 
+    # --- Handle GitHub Keep-Alive Pings ---
+    application.add_handler(
+        MessageHandler(filters.TEXT & filters.Regex("^ping$"), keep_alive_handler),
+        group=0  # run before anything else
+    )
+
+    # --- Main Conversation Handler ---
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -392,9 +427,9 @@ def main() -> None:
             GET_PARTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_parts)],
         },
         fallbacks=[
-             CommandHandler("cancel", cancel),
-             MessageHandler(filters.COMMAND, fallback_handler),
-             MessageHandler(filters.ALL, fallback_handler)
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.COMMAND, fallback_handler),
+            MessageHandler(filters.ALL, fallback_handler)
         ],
         name="car_parts_conversation",
         persistent=False
@@ -410,12 +445,13 @@ def main() -> None:
         logger.critical("RENDER_EXTERNAL_URL is missing after initial check. Cannot set webhook URL.")
         sys.exit(1)
     logger.info(f"Starting webhook server on 0.0.0.0:{PORT}, listening for path {webhook_url_path}...")
+    threading.Thread(target=start_keep_alive_server, daemon=True).start()
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=webhook_url_path,
         webhook_url=full_webhook_url,
-        #secret_token=WEBHOOK_SECRET,
+        secret_token=WEBHOOK_SECRET,
     )
     logger.info("Webhook server stopped.")
 
