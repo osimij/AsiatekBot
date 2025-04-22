@@ -11,4 +11,17 @@ jobs:
     steps:
       - name: Send webhook ping
         run: |
-          curl -X POST https://asiatekbot.onrender.com/webhook -H "Content-Type: application/json" -d '{"message": {"text": "ping"}}' || true
+          curl -X POST https://asiatekbot.onrender.com/webhook \
+            -H "Content-Type: application/json" \
+            -d '{
+              "update_id": 999999999,
+              "message": {
+                "message_id": 1,
+                "date": 1713750000,
+                "chat": {
+                  "id": 123456789,
+                  "type": "private"
+                },
+                "text": "ping"
+              }
+            }' || true
