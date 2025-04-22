@@ -415,7 +415,7 @@ def main() -> None:
         port=PORT,
         url_path=webhook_url_path,
         webhook_url=full_webhook_url,
-        secret_token=WEBHOOK_SECRET,
+        #secret_token=WEBHOOK_SECRET,
     )
     logger.info("Webhook server stopped.")
 
