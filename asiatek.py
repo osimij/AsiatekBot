@@ -211,8 +211,7 @@ async def err_handler(update, context): logger.error(f"Exception: {context.error
 
 # ---------- POST‑INIT ROUTES ----------
 async def add_aux_routes(app: Application) -> None:
-    while getattr(app, "web_app", None) is None:
-        await asyncio.sleep(0.05)
+    """Register lightweight health endpoints after PTB creates the aiohttp server."""
     app.web_app.router.add_get("/keep-alive", keep_alive)
     app.web_app.router.add_get("/healthz",   keep_alive)
 
@@ -255,6 +254,7 @@ def main() -> None:
         port=PORT,
         url_path="/webhook",
         webhook_url=full_url,
+        secret_token=WEBHOOK_SECRET,
     )
 
 if __name__ == "__main__":
