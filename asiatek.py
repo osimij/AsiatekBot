@@ -176,7 +176,7 @@ async def send_admin_notification(user: dict, order: dict):
 async def save_order_to_supabase(**data) -> bool:
     """Saves order, ensuring required fields are present."""
     # Basic validation before attempting insert
-    if not all(data.get(k) for k in ["telegram_user_id", "contact", "parts"]):
+    if not all(data.get(k) for k in ["telegram_user_id", "contact_info", "parts_needed"]):
         logger.error(f"Missing critical order data before save: {data}")
         return False
 
