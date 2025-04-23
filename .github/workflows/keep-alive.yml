@@ -11,21 +11,38 @@ jobs:
     runs-on: ubuntu-latest # Use a standard runner
     steps:
       - name: Send authenticated webhook ping
-        # This command sends a POST request like Telegram would,
-        # but with a harmless "ping" message.
-        # -sSf: Silent, show errors, fail on HTTP errors
-        # -X POST: Specifies the HTTP method
-        # -H Content-Type: Standard header for JSON data
-        # -H X-Telegram-Bot-Api-Secret-Token: The crucial security header
-        # -d: The JSON data payload
-        # || true: Prevents the whole workflow from failing if Render is temporarily down
+        # This step now sends a more complete JSON payload
+        # to avoid the KeyError: 'date' in PTB v21.7
+        env:
+          # Make the GitHub Secret available as an environment variable
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: |
+          # Create a more realistic payload with required fields
+          TIMESTAMP=$(date +%s)
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "update_id": 100000000,
+            "message": {
+              "message_id": 9999,
+              "date": $TIMESTAMP,
+              "chat": {
+                "id": 12345,
+                "type": "private"
+              },
+              "from": {
+                "id": 54321,
+                "is_bot": false,
+                "first_name": "KeepAlive"
+              },
+              "text": "ping"
+            }
+          }
+          EOF
+          )
+
+          # Send the POST request with the detailed payload and secret header
           curl -sSf -X POST \
             -H "Content-Type: application/json" \
             -H "X-Telegram-Bot-Api-Secret-Token: $WEBHOOK_SECRET" \
-            -d '{"message":{"text":"ping"}}' \
+            -d "$JSON_PAYLOAD" \
             https://asiatekbot.onrender.com/webhook || true
-        env:
-          # This makes the GitHub Secret available as an environment variable
-          # ONLY for this step.
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
