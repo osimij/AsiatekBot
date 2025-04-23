@@ -474,6 +474,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("--- Fallback handler ENTERED ---") # <<< ADD THIS DEBUG LINE
     """Handles messages outside the expected flow or unexpected commands."""
     if not update or not update.effective_message:
         logger.warning("Fallback handler triggered with invalid update object.")
