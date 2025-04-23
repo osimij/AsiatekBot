@@ -1,13 +1,31 @@
 name: Keep Bot Awake
+
 on:
   schedule:
-    - cron: "*/15 * * * *"
-  workflow_dispatch:
+    # Runs every 15 minutes
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
 
 jobs:
-  ping-render:
-    runs-on: ubuntu-latest
+  ping-render-webhook:
+    runs-on: ubuntu-latest # Use a standard runner
     steps:
-      - name: Hit /keep-alive
+      - name: Send authenticated webhook ping
+        # This command sends a POST request like Telegram would,
+        # but with a harmless "ping" message.
+        # -sSf: Silent, show errors, fail on HTTP errors
+        # -X POST: Specifies the HTTP method
+        # -H Content-Type: Standard header for JSON data
+        # -H X-Telegram-Bot-Api-Secret-Token: The crucial security header
+        # -d: The JSON data payload
+        # || true: Prevents the whole workflow from failing if Render is temporarily down
         run: |
-          curl -sSf https://asiatekbot.onrender.com/keep-alive || true
+          curl -sSf -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Telegram-Bot-Api-Secret-Token: $WEBHOOK_SECRET" \
+            -d '{"message":{"text":"ping"}}' \
+            https://asiatekbot.onrender.com/webhook || true
+        env:
+          # This makes the GitHub Secret available as an environment variable
+          # ONLY for this step.
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
