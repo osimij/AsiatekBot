@@ -1,14 +1,13 @@
 name: Keep Bot Awake
-
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 jobs:
   ping-render:
     runs-on: ubuntu-latest
     steps:
-      - name: Send webhook ping
+      - name: Hit /keep-alive
         run: |
-          curl -X POST https://asiatekbot.onrender.com/webhook -H "Content-Type: application/json" -d '{"message": {"text": "ping"}}' || true
+          curl -sSf https://asiatekbot.onrender.com/keep-alive || true
