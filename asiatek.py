@@ -33,12 +33,13 @@ PORT           = int(os.getenv("PORT", 8080))
 # ---------- LOGGING ----------
 class JsonHandler(logging.StreamHandler):
     def emit(self, record):
-        super().emit(json.dumps({
-            "t": datetime.utcnow().isoformat(timespec="seconds")+'Z',
+        log_entry = json.dumps({
+            "t": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             "lvl": record.levelname,
             "msg": record.getMessage(),
-            "mod": record.name
-        }))
+            "mod": record.name,
+        })
+        self.stream.write(log_entry + "\n")
 root = logging.getLogger(); root.setLevel(logging.INFO); root.handlers=[JsonHandler()]
 logger = logging.getLogger("bot")
 
@@ -159,7 +160,12 @@ async def add_aux_routes(app:Application)->None:
 
 # ---------- MAIN ----------
 def main()->None:
-    app=Application.builder().token(TG_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TG_TOKEN)
+        .post_init(add_aux_routes)  # attach routes after startup
+        .build()
+    )
     app.add_error_handler(err_handler)
 
     app.add_handler(ConversationHandler(
@@ -178,8 +184,8 @@ def main()->None:
         listen="0.0.0.0", port=PORT,
         url_path="/webhook", webhook_url=full_url,
         secret_token=WEBHOOK_SECRET,
-        post_init=add_aux_routes,   # ← comma added
     )
 
 if __name__=="__main__":
     main()
+    
