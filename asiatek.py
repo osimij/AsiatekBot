@@ -573,8 +573,6 @@ def main() -> None:
 
     # Add a fallback handler outside the conversation (lower priority group)
     # This catches commands/messages sent when not in a conversation state.
-    application.add_handler(MessageHandler(filters.COMMAND | filters.ALL, fallback_handler), group=1)
-
     # --- Webhook Setup ---
     webhook_path = "/webhook"
     full_webhook_url = f"{BASE_URL}{webhook_path}"
