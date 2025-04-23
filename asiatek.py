@@ -1,19 +1,28 @@
-# bot.py – FINAL Version with Original Texts
+# bot.py – FINAL Version with aiohttp Custom Server & Original Texts
 # -*- coding: utf-8 -*-
-import asyncio, json, logging, os, re, sys
+import asyncio
+import json
+import logging
+import os
+import re
+import sys
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+# --- Core Libraries ---
 from telegram import (
     Update, ReplyKeyboardRemove, InlineKeyboardButton,
     InlineKeyboardMarkup, constants
 )
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, filters
+    Application, ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ConversationHandler, ContextTypes, filters
 )
 from supabase import create_client, Client
 import resend
+
+# --- Web Server Library ---
+from aiohttp import web # Import aiohttp
 
 # ---------- ENVIRONMENT ----------
 REQ = [
@@ -23,12 +32,8 @@ REQ = [
 ]
 missing = [v for v in REQ if not os.getenv(v)]
 if missing:
-    # Use logger if possible, otherwise print
-    log_msg = f"Missing required environment variables: {', '.join(missing)}. Bot cannot start."
-    try:
-        logger.critical(log_msg)
-    except NameError:
-        print(f"CRITICAL: {log_msg}")
+    # Use basic print here as logger might not be ready
+    print(f"CRITICAL: Missing required environment variables: {', '.join(missing)}. Bot cannot start.")
     sys.exit(1)
 
 TG_TOKEN       = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -39,6 +44,9 @@ ADMIN_EMAIL    = os.environ["ADMIN_EMAIL"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 BASE_URL       = os.environ["RENDER_EXTERNAL_URL"].rstrip("/")
 PORT           = int(os.getenv("PORT", 8080))
+# Define webhook path consistently
+WEBHOOK_PATH   = "/webhook"
+WEBHOOK_URL    = f"{BASE_URL}{WEBHOOK_PATH}"
 
 # ---------- LOGGING ----------
 class JsonHandler(logging.StreamHandler):
@@ -70,11 +78,16 @@ root.addHandler(json_handler)
 
 # Silence excessive logging from libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.INFO) # Log aiohttp info
 logging.getLogger("supabase").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.INFO)
 logging.getLogger("telegram.bot").setLevel(logging.INFO)
 
 logger = logging.getLogger("bot") # Specific logger for our bot
+
+# ---------- PTB Application (Global) ----------
+# Needs to be accessible by the webhook handler
+ptb_app: Optional[Application] = None
 
 # ---------- CLIENTS ----------
 supabase: Optional[Client] = None
@@ -112,6 +125,17 @@ async def _insert_async(table: str, data: Dict[str, Any]) -> Any:
     )
     return response # Return the APIResponse object
 
+def _handle_task_result(task: asyncio.Task) -> None:
+    """Callback function to log exceptions from background tasks."""
+    try:
+        task.result() # Retrieve result. If task raised exception, it's re-raised here.
+    except asyncio.CancelledError:
+        logger.warning(f"Background task '{task.get_name()}' was cancelled.")
+    except Exception:
+        # Log the exception with traceback
+        logger.exception(f"Exception raised by background task '{task.get_name()}':")
+
+
 async def log_interaction(
     update: Optional[Update],
     context: ContextTypes.DEFAULT_TYPE,
@@ -144,17 +168,21 @@ async def log_interaction(
     }
 
     # Schedule the background task
-    try:
-        task = context.application.create_task(
-            _insert_async("bot_usage_log", payload),
-            update=update,
-            name=f"log_interaction_{user_id}_{interaction_type}"
-        )
-        task.add_done_callback(_handle_task_result) # Add callback for error logging
-    except ConnectionError:
-         logger.error("Failed to schedule log_interaction: Supabase client not ready.")
-    except Exception as e:
-         logger.error("Failed to schedule log_interaction task.", exc_info=True)
+    if context and hasattr(context, 'application') and context.application:
+        try:
+            task = context.application.create_task(
+                _insert_async("bot_usage_log", payload),
+                update=update,
+                name=f"log_interaction_{user_id}_{interaction_type}"
+            )
+            task.add_done_callback(_handle_task_result) # Add callback for error logging
+        except ConnectionError:
+             logger.error("Failed to schedule log_interaction: Supabase client not ready.")
+        except Exception as e:
+             logger.error("Failed to schedule log_interaction task.", exc_info=True)
+    else:
+        logger.warning("Application context not available for creating log_interaction task.")
+
 
 async def send_admin_notification(user: dict, order: dict):
     """Sends admin email notification using Resend."""
@@ -228,7 +256,7 @@ async def save_order_to_supabase(**data) -> bool:
         logger.error(f"Failed to save order to Supabase for user {user_id}. Error: {supabase_error_details}", exc_info=True)
         return False
 
-# ---------- HANDLERS (with restored original texts) ----------
+# ---------- PTB HANDLERS (with restored original texts) ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts or restarts the conversation."""
@@ -430,14 +458,18 @@ async def get_parts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await log_interaction(update, context, "action_complete", "order_saved")
 
         # Attempt notification, log separately if it fails
-        context.application.create_task(
-             send_admin_notification(
-                 {"id": d["id"], "username": d.get("username")},
-                 # Pass correct keys for email generation
-                 {"vin": d.get("vin"), "contact": d.get("contact"), "parts": parts_needed},
-             ),
-             update=update, name=f"send_admin_notification_{user_id}"
-        ).add_done_callback(_handle_task_result)
+        if ptb_app: # Ensure ptb_app is initialized before creating task
+            ptb_app.create_task(
+                 send_admin_notification(
+                     {"id": d["id"], "username": d.get("username")},
+                     # Pass correct keys for email generation
+                     {"vin": d.get("vin"), "contact": d.get("contact"), "parts": parts_needed},
+                 ),
+                 update=update, name=f"send_admin_notification_{user_id}"
+            ).add_done_callback(_handle_task_result)
+        else:
+            logger.error("Cannot schedule admin notification: PTB application not ready.")
+
 
         reply_text = "✅ Спасибо! Ваш запрос отправлен.\nМы получили ваши данные и список деталей. Мы скоро свяжемся с вами!"
 
@@ -452,7 +484,11 @@ async def get_parts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     new_request_button = InlineKeyboardButton("➕ Запросить снова", callback_data="new_request")
     reply_markup_new_request = InlineKeyboardMarkup([[new_request_button]])
 
-    await message.reply_text(reply_text, reply_markup=reply_markup_new_request)
+    try:
+        await message.reply_text(reply_text, reply_markup=reply_markup_new_request)
+    except Exception as e:
+         logger.error(f"Failed to send final reply in get_parts for user {user_id}.", exc_info=True)
+
 
     context.user_data.clear() # Clear data after finishing
     return ConversationHandler.END
@@ -474,10 +510,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("--- Fallback handler ENTERED ---") # <<< ADD THIS DEBUG LINE
-    """Handles messages outside the expected flow or unexpected commands."""
+    """Handles messages within the conversation that are not expected."""
     if not update or not update.effective_message:
-        logger.warning("Fallback handler triggered with invalid update object.")
+        logger.warning("Fallback handler (within conv) triggered with invalid update object.")
         return
 
     user_id = update.effective_user.id if update.effective_user else "Unknown"
@@ -485,21 +520,14 @@ async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.conversation_state if hasattr(context, 'conversation_state') else 'N/A'
 
     # Log the fallback event
-    await log_interaction(update, context, "fallback", text[:100]) # Log first 100 chars
-    logger.warning(f"Fallback handler triggered for user {user_id}. State: {state}. Message: '{text}'")
-
-    # Check if the fallback is the keep-alive ping (now sent with secret token)
-    # We let the standard reply happen to confirm receipt.
-    if text == "ping" and update.effective_message.from_user is None: # Pings usually lack a user
-        logger.info("Keep-alive ping received via fallback handler.")
-        # You might want to exit silently here depending on desired behavior
-        # return # Uncomment to send no reply to pings
+    await log_interaction(update, context, "fallback_in_conv", text[:100]) # Log first 100 chars
+    logger.warning(f"Fallback handler (within conv) triggered for user {user_id}. State: {state}. Message: '{text}'")
 
     # --- Restored Original Texts ---
     if text.startswith('/'):
         reply_text = f"Команда {text} здесь не ожидается. Пожалуйста, следуйте инструкциям или используйте /cancel для отмены."
     else:
-        # Generic response for unexpected text/media during conversation or outside it
+        # Generic response for unexpected text/media during conversation
         reply_text = "Извините, я этого не ожидал. Если вы были в процессе запроса, пожалуйста, следуйте подсказкам. Вы всегда можете начать сначала с /start или отменить с /cancel."
     # --- End Restored Texts ---
 
@@ -508,17 +536,7 @@ async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to send fallback reply to user {user_id}.", exc_info=True)
 
-
 # ---------- ERROR HANDLING ----------
-def _handle_task_result(task: asyncio.Task) -> None:
-    """Callback function to log exceptions from background tasks."""
-    try:
-        task.result() # Retrieve result. If task raised exception, it's re-raised here.
-    except asyncio.CancelledError:
-        logger.warning(f"Background task '{task.get_name()}' was cancelled.")
-    except Exception:
-        # Log the exception with traceback
-        logger.exception(f"Exception raised by background task '{task.get_name()}':")
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log Errors caused by Updates and notify user."""
@@ -532,74 +550,161 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
             logger.error("Failed to send error message to user.", exc_info=True)
 
 
-# ---------- MAIN ----------
-def main() -> None:
-    """Set up and run the bot."""
-    logger.info("Starting bot application...")
+# ---------- WEB SERVER HANDLERS (aiohttp) ----------
 
-    # Build the application
-    application = (
-        Application.builder()
+async def healthz_handler(request: web.Request) -> web.Response:
+    """Handles the /healthz keep-alive ping."""
+    logger.info("Received /healthz ping.")
+    return web.Response(text="OK", status=200)
+
+async def telegram_webhook_handler(request: web.Request) -> web.Response:
+    """Handles incoming Telegram updates via webhook."""
+    global ptb_app # Access the global PTB application object
+
+    # Check secret token if provided in header (for manual testing, Telegram doesn't send it)
+    # Telegram validates via the secret in the webhook URL path itself usually,
+    # but PTB's set_webhook adds header validation logic internally if secret_token is set.
+    # Let's trust PTB's internal handling via set_webhook's secret_token parameter.
+    # If you need MANUAL testing with a tool like curl, you WOULD need this check.
+    # Keep it simple for now, rely on set_webhook.
+
+    # if WEBHOOK_SECRET:
+    #     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+    #         logger.warning("Webhook received request with invalid secret token header.")
+    #         return web.Response(text="Unauthorized", status=403)
+
+    if not ptb_app:
+        logger.error("PTB application not initialized when webhook received.")
+        return web.Response(text="Internal Server Error", status=500)
+
+    try:
+        data = await request.json()
+        update = Update.de_json(data, ptb_app.bot)
+        logger.debug(f"Putting update {update.update_id} into PTB queue.")
+        # Put the update into PTB's processing queue
+        # This queue is managed internally by ptb_app when started
+        await ptb_app.update_queue.put(update)
+        return web.Response(text="OK", status=200) # Acknowledge receipt quickly
+    except json.JSONDecodeError:
+        logger.error("Failed to decode JSON from webhook request body.")
+        return web.Response(text="Bad Request: Invalid JSON", status=400)
+    except Exception as e:
+        logger.exception("Error processing webhook request before queuing.")
+        return web.Response(text="Internal Server Error", status=500)
+
+
+# ---------- MAIN ASYNC FUNCTION ----------
+
+async def main() -> None:
+    """Initialize PTB, set up handlers, start web server, set webhook."""
+    global ptb_app # Declare intention to modify global variable
+
+    logger.info("Starting bot application setup...")
+
+    # Initialize PTB application using ApplicationBuilder
+    ptb_app = (
+        ApplicationBuilder()
         .token(TG_TOKEN)
-        # NOTE: Removed post_init - caused issues with webhook startup timing
         .build()
     )
 
-    # Register the global error handler
-    application.add_error_handler(global_error_handler)
+    # Register the global error handler with PTB
+    ptb_app.add_error_handler(global_error_handler)
 
-    # Conversation Handler Setup
+    # Setup Conversation Handler (exactly as before)
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
             CallbackQueryHandler(start, pattern="^new_request$")
         ],
         states={
-            ASK_VIN_KNOWN: [
-                CallbackQueryHandler(ask_vin_known_handler, pattern="^vin_yes|vin_no$")
-            ],
+            ASK_VIN_KNOWN: [CallbackQueryHandler(ask_vin_known_handler, pattern="^vin_yes|vin_no$")],
             GET_VIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_vin)],
             GET_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contact)],
             GET_PARTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_parts)],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
-            # Fallback handler specifically for messages within the conversation
-            MessageHandler(filters.COMMAND | filters.ALL, fallback_handler)
+            MessageHandler(filters.COMMAND | filters.ALL, fallback_handler) # Handles unexpected input *within* conversation
         ],
         name="car_parts_conversation",
         persistent=False
     )
-    application.add_handler(conv_handler, group=0) # Ensure conv handler runs first
+    ptb_app.add_handler(conv_handler)
+    # NOTE: No extra fallback handler added outside the conversation
 
-    # Add a fallback handler outside the conversation (lower priority group)
-    # This catches commands/messages sent when not in a conversation state.
-    # --- Webhook Setup ---
-    webhook_path = "/webhook"
-    full_webhook_url = f"{BASE_URL}{webhook_path}"
-    logger.info(f"Setting webhook URL: {full_webhook_url}")
-    logger.info(f"Webhook server listening on 0.0.0.0:{PORT} for path {webhook_path}")
+    # Initialize PTB application components (like bot instance, update queue)
+    await ptb_app.initialize()
+    logger.info("PTB application initialized.")
 
-    # Run the webhook server, ensuring secret_token is included
+    # --- Set up aiohttp web server ---
+    logger.info("Setting up aiohttp web server...")
+    aio_app = web.Application()
+    aio_app.add_routes([
+        web.get('/healthz', healthz_handler),        # Route for keep-alive GET pings
+        web.post(WEBHOOK_PATH, telegram_webhook_handler) # Route for Telegram POST updates
+    ])
+
+    runner = web.AppRunner(aio_app)
+    await runner.setup()
+    # Render provides the $PORT env var and expects listening on 0.0.0.0
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
     try:
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=webhook_path,
-            webhook_url=full_webhook_url,
-            secret_token=WEBHOOK_SECRET, # Crucial for security
-            # NOTE: post_init removed from here (invalid syntax)
-        )
+        await site.start()
+        logger.info(f"aiohttp server started successfully on 0.0.0.0:{PORT}.")
     except Exception as e:
-        logger.critical("Failed to start webhook server.", exc_info=True)
+        logger.critical(f"Failed to start aiohttp server on port {PORT}.", exc_info=True)
+        await runner.cleanup()
         sys.exit(1)
 
-    logger.info("Webhook server stopped.") # Usually seen on shutdown signal
+    # --- Set Telegram Webhook ---
+    # We need to do this *after* the server starts listening
+    if ptb_app.bot: # Ensure bot object exists
+        try:
+            logger.info(f"Attempting to set webhook URL with Telegram: {WEBHOOK_URL}")
+            await ptb_app.bot.set_webhook(
+                url=WEBHOOK_URL,
+                secret_token=WEBHOOK_SECRET, # Use the validated secret token
+                allowed_updates=Update.ALL_TYPES # Optional: Specify update types
+            )
+            logger.info("Webhook set successfully with Telegram.")
+        except Exception as e:
+            logger.critical("Failed to set webhook with Telegram API.", exc_info=True)
+            # Cleanup and exit if setting webhook fails, as bot won't receive updates
+            await runner.cleanup()
+            sys.exit(1)
+    else:
+        logger.critical("PTB bot object not initialized, cannot set webhook.")
+        await runner.cleanup()
+        sys.exit(1)
+
+
+    # Start PTB application's internal update processing loop
+    # This runs alongside the aiohttp server and reads from update_queue
+    logger.info("Starting PTB update processing loop...")
+    async with ptb_app: # Use context manager for proper startup/shutdown
+        await ptb_app.start()
+        logger.info("PTB application started processing updates.")
+
+        # Keep the main function alive while the server runs
+        # Instead of sleeping, we can just wait for the runner to finish (e.g., on shutdown)
+        await runner.wait_closed() # More robust than infinite sleep loop
+
+        # --- Cleanup --- (This part runs after server stops)
+        logger.info("aiohttp runner closed. Shutting down PTB application...")
+        await ptb_app.stop()
+        logger.info("Cleaning up aiohttp runner...")
+        await runner.cleanup() # Ensure runner resources are released
+        logger.info("Shutdown complete.")
 
 if __name__ == "__main__":
+    logger.info("Starting main execution script...")
     try:
-        main()
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Received exit signal (KeyboardInterrupt/SystemExit), shutting down.")
     except Exception as e:
-        # Catch critical startup errors not handled elsewhere
-        logger.critical("Application failed to start.", exc_info=True)
+        logger.critical("Application failed critically in main asyncio loop.", exc_info=True)
         sys.exit(1)
+    finally:
+        logger.info("Main execution script finished.")
