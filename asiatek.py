@@ -602,6 +602,7 @@ async def main() -> None:
     logger.info("Starting bot application setup...")
 
     # Initialize PTB application using ApplicationBuilder
+    # No need for post_init or run_webhook here anymore
     ptb_app = (
         ApplicationBuilder()
         .token(TG_TOKEN)
@@ -686,17 +687,19 @@ async def main() -> None:
         await ptb_app.start()
         logger.info("PTB application started processing updates.")
 
-        # Keep the main function alive while the server runs
-        # Instead of sleeping, we can just wait for the runner to finish (e.g., on shutdown)
-        await runner.wait_closed() # More robust than infinite sleep loop
+        # Keep the main function alive indefinitely using asyncio.sleep
+        # This replaces the problematic `await runner.wait_closed()`
+        while True:
+             await asyncio.sleep(3600)      # Sleep for an hour, then loop
 
-        # --- Cleanup --- (This part runs after server stops)
-        logger.info("aiohttp runner closed. Shutting down PTB application...")
-        await ptb_app.stop()
-        logger.info("Cleaning up aiohttp runner...")
-        await runner.cleanup() # Ensure runner resources are released
-        logger.info("Shutdown complete.")
+        # --- Cleanup --- (This part likely won't be reached unless process is killed)
+        # logger.info("Shutting down PTB application...")
+        # await ptb_app.stop() # Should be handled by 'async with' context exit
+        # logger.info("Cleaning up aiohttp runner...")
+        # await runner.cleanup() # Should be handled if main exits cleanly
+        # logger.info("Shutdown complete.")
 
+# This block executes the main async function
 if __name__ == "__main__":
     logger.info("Starting main execution script...")
     try:
