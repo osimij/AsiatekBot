@@ -4,45 +4,16 @@ on:
   schedule:
     # Runs every 15 minutes
     - cron: '*/15 * * * *'
-  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  ping-render-webhook:
-    runs-on: ubuntu-latest # Use a standard runner
+  ping-render-healthz:
+    runs-on: ubuntu-latest
     steps:
-      - name: Send authenticated webhook ping
-        # This step now sends a more complete JSON payload
-        # to avoid the KeyError: 'date' in PTB v21.7
-        env:
-          # Make the GitHub Secret available as an environment variable
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+      - name: Send /healthz ping
+        # Simple GET request to the new /healthz endpoint.
+        # No secret token or complex payload needed.
+        # -f (--fail): Make curl exit with error if HTTP status >= 400
+        # || true: Prevent workflow failure on transient curl errors
         run: |
-          # Create a more realistic payload with required fields
-          TIMESTAMP=$(date +%s)
-          JSON_PAYLOAD=$(cat <<EOF
-          {
-            "update_id": 100000000,
-            "message": {
-              "message_id": 9999,
-              "date": $TIMESTAMP,
-              "chat": {
-                "id": 12345,
-                "type": "private"
-              },
-              "from": {
-                "id": 54321,
-                "is_bot": false,
-                "first_name": "KeepAlive"
-              },
-              "text": "ping"
-            }
-          }
-          EOF
-          )
-
-          # Send the POST request with the detailed payload and secret header
-          curl -sSf -X POST \
-            -H "Content-Type: application/json" \
-            -H "X-Telegram-Bot-Api-Secret-Token: $WEBHOOK_SECRET" \
-            -d "$JSON_PAYLOAD" \
-            https://asiatekbot.onrender.com/webhook || true
+          curl -fsS https://asiatekbot.onrender.com/healthz || true
