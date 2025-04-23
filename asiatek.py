@@ -220,7 +220,7 @@ def main() -> None:
     app = (
         Application.builder()
         .token(TG_TOKEN)
-        .post_init(add_aux_routes)
+        #.post_init(add_aux_routes)
         .build()
     )
     app.add_error_handler(err_handler)
@@ -255,6 +255,7 @@ def main() -> None:
         url_path="/webhook",
         webhook_url=full_url,
         secret_token=WEBHOOK_SECRET,
+        post_init=add_aux_routes,    
     )
 
 if __name__ == "__main__":
