@@ -1,4 +1,4 @@
-# bot.py – FINAL Version with aiohttp Custom Server & Original Texts
+# bot.py – FINAL Version with aiohttp, Persistence & Original Texts
 # -*- coding: utf-8 -*-
 import asyncio
 import json
@@ -16,7 +16,8 @@ from telegram import (
 )
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ConversationHandler, ContextTypes, filters
+    CallbackQueryHandler, ConversationHandler, ContextTypes, filters,
+    PicklePersistence # <-- 1. ADDED IMPORT
 )
 from supabase import create_client, Client
 import resend
@@ -273,6 +274,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await log_interaction(update, context, "command", log_detail)
     logger.info(f"User {user.id} ({user.username}) starting/restarting conversation via {log_detail}.")
 
+    # --- NOTE: Persistence handles user_data loading ---
+    # If persistent=True and state is loaded, user_data might already exist.
+    # We still clear/reset it for a fresh '/start' or 'new_request'
     context.user_data.clear()
     context.user_data['id'] = user.id
     context.user_data['username'] = user.username
@@ -432,6 +436,7 @@ async def get_parts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     d = context.user_data
     # Ensure critical data exists from previous steps
     if "id" not in d or "contact" not in d:
+         # If persistence loaded state but user_data is missing parts, something is wrong
          logger.error(f"Critical data missing in get_parts for user {user_id}. Context: {d}")
          # --- Restored Original Text ---
          await update.message.reply_text("Извините, произошла ошибка при получении ваших данных. Пожалуйста, начните сначала с /start.")
@@ -561,17 +566,7 @@ async def telegram_webhook_handler(request: web.Request) -> web.Response:
     """Handles incoming Telegram updates via webhook."""
     global ptb_app # Access the global PTB application object
 
-    # Check secret token if provided in header (for manual testing, Telegram doesn't send it)
-    # Telegram validates via the secret in the webhook URL path itself usually,
-    # but PTB's set_webhook adds header validation logic internally if secret_token is set.
-    # Let's trust PTB's internal handling via set_webhook's secret_token parameter.
-    # If you need MANUAL testing with a tool like curl, you WOULD need this check.
-    # Keep it simple for now, rely on set_webhook.
-
-    # if WEBHOOK_SECRET:
-    #     if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-    #         logger.warning("Webhook received request with invalid secret token header.")
-    #         return web.Response(text="Unauthorized", status=403)
+    # Secret token validation is handled by ptb_app.bot.set_webhook(...)
 
     if not ptb_app:
         logger.error("PTB application not initialized when webhook received.")
@@ -582,7 +577,6 @@ async def telegram_webhook_handler(request: web.Request) -> web.Response:
         update = Update.de_json(data, ptb_app.bot)
         logger.debug(f"Putting update {update.update_id} into PTB queue.")
         # Put the update into PTB's processing queue
-        # This queue is managed internally by ptb_app when started
         await ptb_app.update_queue.put(update)
         return web.Response(text="OK", status=200) # Acknowledge receipt quickly
     except json.JSONDecodeError:
@@ -601,18 +595,24 @@ async def main() -> None:
 
     logger.info("Starting bot application setup...")
 
-    # Initialize PTB application using ApplicationBuilder
-    # No need for post_init or run_webhook here anymore
+    # --- 2. Initialize Persistence ---
+    # Create the persistence object (saves data to 'bot_persistence.pkl')
+    # This file will be created in the same directory as the script.
+    # On Render, this will be on the ephemeral filesystem.
+    persistence = PicklePersistence(filepath="bot_persistence.pkl")
+
+    # Initialize PTB application using ApplicationBuilder, now with persistence
     ptb_app = (
         ApplicationBuilder()
         .token(TG_TOKEN)
+        .persistence(persistence) # <-- Use the persistence object
         .build()
     )
 
     # Register the global error handler with PTB
     ptb_app.add_error_handler(global_error_handler)
 
-    # Setup Conversation Handler (exactly as before)
+    # Setup Conversation Handler (exactly as before, but persistent=True)
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -629,14 +629,15 @@ async def main() -> None:
             MessageHandler(filters.COMMAND | filters.ALL, fallback_handler) # Handles unexpected input *within* conversation
         ],
         name="car_parts_conversation",
-        persistent=False
+        persistent=True # <-- 3. ENABLED persistence for the handler
     )
     ptb_app.add_handler(conv_handler)
     # NOTE: No extra fallback handler added outside the conversation
 
     # Initialize PTB application components (like bot instance, update queue)
+    # This will also load any persisted data from bot_persistence.pkl if it exists.
     await ptb_app.initialize()
-    logger.info("PTB application initialized.")
+    logger.info("PTB application initialized (persistence loaded if file existed).")
 
     # --- Set up aiohttp web server ---
     logger.info("Setting up aiohttp web server...")
@@ -684,20 +685,16 @@ async def main() -> None:
     # This runs alongside the aiohttp server and reads from update_queue
     logger.info("Starting PTB update processing loop...")
     async with ptb_app: # Use context manager for proper startup/shutdown
+        # This will also start the persistence saving mechanism
         await ptb_app.start()
         logger.info("PTB application started processing updates.")
 
         # Keep the main function alive indefinitely using asyncio.sleep
-        # This replaces the problematic `await runner.wait_closed()`
         while True:
              await asyncio.sleep(3600)      # Sleep for an hour, then loop
 
-        # --- Cleanup --- (This part likely won't be reached unless process is killed)
-        # logger.info("Shutting down PTB application...")
-        # await ptb_app.stop() # Should be handled by 'async with' context exit
-        # logger.info("Cleaning up aiohttp runner...")
-        # await runner.cleanup() # Should be handled if main exits cleanly
-        # logger.info("Shutdown complete.")
+        # Cleanup is handled automatically by 'async with ptb_app' context manager
+        # when the loop eventually exits (e.g., signal)
 
 # This block executes the main async function
 if __name__ == "__main__":
